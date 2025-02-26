@@ -16,12 +16,65 @@
 // 2. use generic CUDA and CUDA Runtime API implamented Naive reference GEMM kernel
 
 
+// 3. Run Gemm
+// 3.0 Generate arbitrary elements.
+__global__ void IntializeMatrix_kernel(
+    float *matrix,
+    int rows,
+    int columns,
+    int seed = 0
+){
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    int y = threadIdx.y + blockIdx.y * blockDim.y;
 
-// 3. host function
+    if ( i < row && j < columns){
+        int offset = i + j * rows;
 
-// 3.1 initialize Matrix
-cudaError_t AllocateMatrix(float **matrix, int m, int n, int seed = 0){
+        // use Linear Congruential Generator generate arbitrary elements.
+        int const k = 16807;
+        int const m = 16;
+        float value = float( ((k + seed) * k % m ) - m / 2);
 
+        matrix[offset] = value;
+    }
+}
+
+cudaError_t InitializeMatrix(float *matrix, int rows, int columns, int seed=0){
+    dim3 block(16, 16);
+    dim3 grid((rows + block.x -1 ) /block.x, (columns + block.y) / block.y);
+
+    InitializeMatrix_kernel<<<grid, block>>>(matrix, rows, columns, seed);
+}
+
+
+// 3.1 allocate Matrix
+cudaError_t AllocateMatrix(float **matrix, int rows, int columns, int seed = 0){
+    cudaError_t result;
+
+    size_t matrix_size = rows * columns * sizeof(float);
+    result = cudaMalloc(reinterpret_cast<void **>matrix, matrix_size);
+    if (result != cudaSuccess){
+        std::cerr << "Failed to allocate matrix: " 
+        << cudaGetErrorString(result) << std::endl;
+        return result;
+    }
+
+    // clear matrix
+    result = cudaMemset(*matrix, 0, matrix_size);
+    if (result != cudaSuccess){
+        std::cerr << "Failed to clear matrix device memory: "
+        << cudaGetErrorString(result) << std::endl;
+        return result;
+    }
+
+    result = InitializeMatrix(matrix, rows, columns, seed);
+    if (result != cudaSuccess){
+        std::cerr << "Failed to initialize matrix: "
+        << cudaGetErrorString(result) << std::endl;
+        return result;
+    }
+
+    return result;
 }
 
 
@@ -38,6 +91,7 @@ cudaError_t TestCutlassAndReferenceGemm(){
 
     return result;
 }
+
 
 // 3.3 main 
 int main(){int argc, const char *arg[]}{
