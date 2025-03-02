@@ -19,7 +19,7 @@ cudaError_t CutlassSgemmNN(
   int K,
   float alpha, float const *A, int lda,
   float const *B, int ldb,
-  float beta, float const *C, int ldc
+  float beta, float *C, int ldc
 ){
   // Define type definition for single-precision CUTLASS GEMM with column-major
   using ColumnMajor = cutlass::layout::ColumnMajor;
@@ -55,13 +55,13 @@ cudaError_t CutlassSgemmNN(
 __global__ void ReferenceGemm_kernel(int M, int N, int K,
   float alpha, float const *A, int lda,
   float const *B, int ldb,
-  float beta, float const *C, int ldc
+  float beta, float *C, int ldc
 ){
     // column_major layout
-    int x = threadIdx.x + blockIdx.x * blockDim.x;
-    int y = threadIdx.y + blockIdx.y * blockDimy;
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    int j = threadIdx.y + blockIdx.y * blockDim.y;
 
-    if (x < M && y < N){
+    if (i < M && j < N){
        float accumulator = 0;
 
        for(int k = 0; k < K; ++k){
@@ -95,9 +95,9 @@ __global__ void InitializeMatrix_kernel(
     int seed = 0
 ){
     int i = threadIdx.x + blockIdx.x * blockDim.x;
-    int y = threadIdx.y + blockIdx.y * blockDim.y;
+    int j = threadIdx.y + blockIdx.y * blockDim.y;
 
-    if ( i < row && j < columns){
+    if ( i < rows && j < columns){
         int offset = i + j * rows;
 
         // use Linear Congruential Generator generate arbitrary elements.
@@ -114,6 +114,8 @@ cudaError_t InitializeMatrix(float *matrix, int rows, int columns, int seed=0){
     dim3 grid((rows + block.x -1 ) /block.x, (columns + block.y) / block.y);
 
     InitializeMatrix_kernel<<<grid, block>>>(matrix, rows, columns, seed);
+
+    return cudaGetLastError();
 }
 
 
@@ -122,7 +124,7 @@ cudaError_t AllocateMatrix(float **matrix, int rows, int columns, int seed = 0){
     cudaError_t result;
 
     size_t matrix_size = rows * columns * sizeof(float);
-    result = cudaMalloc(reinterpret_cast<void **>matrix, matrix_size);
+    result = cudaMalloc(reinterpret_cast<void **>(matrix), matrix_size);
     if (result != cudaSuccess){
         std::cerr << "Failed to allocate matrix: "
         << cudaGetErrorString(result) << std::endl;
@@ -137,7 +139,7 @@ cudaError_t AllocateMatrix(float **matrix, int rows, int columns, int seed = 0){
         return result;
     }
 
-    result = InitializeMatrix(matrix, rows, columns, seed);
+    result = InitializeMatrix(*matrix, rows, columns, seed);
     if (result != cudaSuccess){
         std::cerr << "Failed to initialize matrix: "
         << cudaGetErrorString(result) << std::endl;
@@ -149,7 +151,10 @@ cudaError_t AllocateMatrix(float **matrix, int rows, int columns, int seed = 0){
 
 
 // 3.2 launch GEMM kernel
-cudaError_t TestCutlassAndReferenceGemm(){
+cudaError_t TestCutlassAndReferenceGemm(
+    int M, int N, int K,
+    float alpha,
+    float beta){
     cudaError_t result;
 
     // Compute Leading Dimensions for each matrix
@@ -169,7 +174,7 @@ cudaError_t TestCutlassAndReferenceGemm(){
     }
 
     result = AllocateMatrix(&B, K, N, 17);
-    if (reuslt != cudaSuccess){
+    if (result != cudaSuccess){
         cudaFree(A);          // free A
         return result;
     }
@@ -218,7 +223,7 @@ cudaError_t TestCutlassAndReferenceGemm(){
     }
 
     // Launch Reference GEMM
-    result = ReferenceGemm(M, N, K, alpha, A, lda, B, ldb, beta, C_reference, ldc)
+    result = ReferenceGemm(M, N, K, alpha, A, lda, B, ldb, beta, C_reference, ldc);
     if (result != cudaSuccess){
         std::cerr << "Cutlass Gemm kernel failed:"
           << cudaGetErrorString(result) << std::endl;
@@ -235,7 +240,7 @@ cudaError_t TestCutlassAndReferenceGemm(){
     std::vector<float> host_cutlass(ldc * N, 0);
     std::vector<float> host_reference(ldc * N, 0);
 
-    result = cudaMemcpy(host_cutlass.data(), C_cutlass, siezof_C, cudaMemcpyDeviceToHost);
+    result = cudaMemcpy(host_cutlass.data(), C_cutlass, sizeof_C, cudaMemcpyDeviceToHost);
     if (result != cudaSuccess){
         std::cerr << "Failed to copy CUTLASS GEMM results:"
            << cudaGetErrorString(result) << std::endl;
@@ -278,7 +283,7 @@ cudaError_t TestCutlassAndReferenceGemm(){
 
 
 // 3.3 main
-int main(){int argc, const char *arg[]}{
+int main(int argc, const char *arg[]){
     // GEMM problem dimensions
     int problem[3] = {128, 128, 128};
     for (int i = 1; i < argc; ++i){
