@@ -152,10 +152,6 @@ cudaError_t AllocateMatrix(float **matrix, int rows, int columns, int seed = 0){
 cudaError_t TestCutlassAndReferenceGemm(){
     cudaError_t result;
 
-    bool CheckResult = [&](cudaError_t result){
-        return result == cudaSuccess;
-    };
-
     // Compute Leading Dimensions for each matrix
     int lda = M;     // A[M, K], Layout:column_major
     int ldb = K;     // B[K, N], Layout:column_major
@@ -167,13 +163,117 @@ cudaError_t TestCutlassAndReferenceGemm(){
     float *C_cutlass;
     float *C_reference;
 
-if (!CheckResult(AllocateMatrix(A, M, K, seed=0))){
-    return cudaUnKnown
-}
+    result = AllocateMatrix(&A, M, K, 0);
+    if (result != cudaSuccess){
+        return result;
+    }
 
+    result = AllocateMatrix(&B, K, N, 17);
+    if (reuslt != cudaSuccess){
+        cudaFree(A);          // free A
+        return result;
+    }
 
+    result = AllocateMatrix(&C_cutlass, M, N, 101);
+    if (result != cudaSuccess){
+        cudaFree(B);          // free B
+        cudaFree(A);          // free A
+        return result;
+    }
 
-    return result;
+    result = AllocateMatrix(&C_reference, M, N, 101);
+    if (result != cudaSuccess){
+        cudaFree(A);         // free A
+        cudaFree(B);         // free B
+        cudaFree(C_cutlass); // free Cutlass
+        return result;
+    }
+
+    size_t sizeof_C = sizeof(float) * ldc * N;  // M * N
+    result  = cudaMemcpy(C_reference, C_cutlass, sizeof_C, cudaMemcpyDeviceToDevice);
+    if (result != cudaSuccess){
+        std::cerr << "Failed to copy C_cutlass to C_reference:"
+          << cudaGetErrorString(result) << std::endl;
+
+        cudaFree(C_reference);
+        cudaFree(C_cutlass);
+        cudaFree(B);
+        cudaFree(A);
+
+        return result;
+    }
+
+    // Launch CUTLASS GEMM
+    result = CutlassSgemmNN(M, N, K, alpha, A, lda, B, ldb, beta, C_cutlass, ldc);
+    if (result != cudaSuccess){
+        std::cerr << "Cutlass Gemm kernel failed:"
+          << cudaGetErrorString(result) << std::endl;
+
+        cudaFree(C_reference);
+        cudaFree(C_cutlass);
+        cudaFree(B);
+        cudaFree(A);
+
+        return result;
+    }
+
+    // Launch Reference GEMM
+    result = ReferenceGemm(M, N, K, alpha, A, lda, B, ldb, beta, C_reference, ldc)
+    if (result != cudaSuccess){
+        std::cerr << "Cutlass Gemm kernel failed:"
+          << cudaGetErrorString(result) << std::endl;
+
+        cudaFree(C_reference);
+        cudaFree(C_cutlass);
+        cudaFree(B);
+        cudaFree(A);
+
+        return result;
+    }
+
+    // Copy to host and verify equivalence.
+    std::vector<float> host_cutlass(ldc * N, 0);
+    std::vector<float> host_reference(ldc * N, 0);
+
+    result = cudaMemcpy(host_cutlass.data(), C_cutlass, siezof_C, cudaMemcpyDeviceToHost);
+    if (result != cudaSuccess){
+        std::cerr << "Failed to copy CUTLASS GEMM results:"
+           << cudaGetErrorString(result) << std::endl;
+
+        cudaFree(C_reference);
+        cudaFree(C_cutlass);
+        cudaFree(B);
+        cudaFree(A);
+
+        return result;
+    }
+
+    result = cudaMemcpy(host_reference.data(), C_reference, sizeof_C, cudaMemcpyDeviceToHost);
+    if (result != cudaSuccess){
+        std::cerr << "Failed to copy Reference GEMM results:"
+            << cudaGetErrorString(result) << std::endl;
+
+        cudaFree(C_reference);
+        cudaFree(C_cutlass);
+        cudaFree(B);
+        cudaFree(A);
+
+        return result;
+    }
+
+    // Free device memory allocations
+    cudaFree(C_reference);
+    cudaFree(C_cutlass);
+    cudaFree(B);
+    cudaFree(A);
+
+    if (host_cutlass != host_reference){
+        std::cerr << "CUTLASS results incorrect." << std::endl;
+
+        return cudaErrorUnknown;
+    }
+
+    return cudaSuccess;
 }
 
 
